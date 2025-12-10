@@ -12,3 +12,4 @@ point
 nvdiffrast
 pbgi/bvhworkers/.slangtorch_cache/*
 *.lock
+core.*
