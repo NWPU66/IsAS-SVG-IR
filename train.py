@@ -23,6 +23,7 @@ from utils.graphics_utils import rgb_to_srgb
 from torchvision.utils import save_image, make_grid
 from lpipsPyTorch import lpips
 from scene.utils import save_render_orb, save_depth_orb, save_normal_orb, save_albedo_orb, save_roughness_orb
+from utils.IsAS_utils import *
 
 
 def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams, is_pbr=False):
@@ -33,7 +34,7 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
     Setup Gaussians
     """
     gaussians = GaussianModel(dataset.sh_degree, render_type=args.type)
-    scene = Scene(dataset, gaussians)
+    scene = Scene(dataset, gaussians, resolution_scales=[1.0, 2.0, 4.0, 8.0])   # To load half resolution image
     if args.checkpoint:
         print("Create Gaussians from checkpoint {}".format(args.checkpoint))
         first_iter = gaussians.create_from_ckpt(args.checkpoint, restore_optimizer=True)
@@ -121,12 +122,22 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
 
         # Pick a random Camera
         if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_stack = scene.getTrainCameras(scale=2.0).copy()   # To load half resolution image
 
         loss = 0
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
 
-        # Render
+        """ 
+        ================================================================================
+        Image Space Adaptive Sampling Stage 1:
+
+        Render Image at half resolution.
+        Calculate the "gradient of loss" and "gradient of image".
+        Lead to pj1 and pj2.
+        Image space adaptive sampling probability: pj = norm(sqrt(pj1 * pj2))
+        """
+
+        # Render Image at half resolution
         if (iteration - 1) == args.debug_from:
             pipe.debug = True
 
@@ -138,32 +149,42 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
             render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         # Loss
-        tb_dict = render_pkg["tb_dict"]
-        loss += render_pkg["loss"]
-        loss.backward()
-        gaussians.debug()
+        # tb_dict = render_pkg["tb_dict"]
+        # loss += render_pkg["loss"]
+        # loss.backward()
+        # gaussians.debug()
 
-        # # test part 
-        # canonical_rays = scene.get_canonical_rays()
-        # # NOTE: mask normal map by view direction to avoid skip value
-        # H, W = viewpoint_cam.image_height, viewpoint_cam.image_width
-        # c2w = torch.inverse(viewpoint_cam.world_view_transform.T)  # [4, 4]
- 
-        # view_dirs = -(
-        #     (F.normalize(canonical_rays[:, None, :], p=2, dim=-1))  # [HW, 3, 3]
-        #     # .sum(dim=-1)
-        #     .reshape(H, W, 3)
-        # )  # [H, W, 3]
+        # TODO - break down the loss into two parts: d(loss)/d(image) and d(image)/d(theta),
+        # where "theta" is the parameters of the scene.
+        Loss_I = render_pkg["loss"]  # loss
+        I_Theta = render_pkg["pbr"]   # image
 
-        # rayo = viewpoint_cam.camera_center
-        # # rayo = torch.zeros_like(rayo)
+        # TODO - calculate pj1, pj2 and pj
+        pj1 = torch.ones(3, 400, 400, dtype=torch.float32, device="cuda")
+        pj2 = torch.ones(3, 400, 400, dtype=torch.float32, device="cuda")
+        pj1pj2 = pj1 * pj2
+        pj = torch.sqrt(pj1pj2) / torch.sum(pj1pj2) # convert into [0, 1] as probability
 
-        # rayo = torch.tensor([0.0, 0.0, 18.0], device="cuda").repeat(H, W, 1)
+        """ 
+        ================================================================================
+        Image Space Adaptive Sampling Stage 2:
 
-        # render_res = gaussians.renderer.render_SH(rayo, view_dirs, gaussians.get_inverse_covariance())
-        # save_image(render_res.permute(2, 0, 1), os.path.join(args.model_path, "visualize", f"{viewpoint_cam.image_name}.png"))
-        # exit()
+        Sampling point based on pj at half resolution.
+        Convert point into full resolution using the inverse direction of gradient.
+        Ray tracing these points for two round using modified "pbgi".
+        1st round: For image and d(loss)/d(image)
+        2nd round: For d(loss)/d(theta)
+        d(loss)/d(theta) = 1/N * sum(1/pj * d(loss)/d(image) * d(image)/d(theta))
+        """
 
+        # TODO - sampling points based on pj and convert to full resolution.
+        pass
+
+        # TODO - ray tracing
+        pass
+
+        # TODO - calculate gradient d(loss)/d(theta)
+        pass
 
         with torch.no_grad():
             if pipe.save_training_vis:
@@ -435,7 +456,8 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument('--gui', action='store_true', default=False, help="use gui")
-    parser.add_argument('-t', '--type', choices=['render', 'normal', 'render_relight'], default='render')
+    parser.add_argument('-t', '--type', choices=['render', 'normal', 'render_relight'
+                                                 ], default='render')
     parser.add_argument("--test_interval", type=int, default=2500)
     parser.add_argument("--save_interval", type=int, default=5000)
     parser.add_argument("--quiet", action="store_true")
