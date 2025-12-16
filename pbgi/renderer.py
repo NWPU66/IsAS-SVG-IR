@@ -12,6 +12,10 @@ import math
 from plyfile import PlyData, PlyElement
 # from scene.gaussian_model import GaussianModel
 from utils.general_utils import *
+from scene.gaussian_model import GaussianModel
+from scene.direct_light_map import DirectLightMap
+from scene.cameras import Camera
+from utils.graphics_utils import rgb_to_srgb
 
 class Renderer:
     def __init__(self):
@@ -452,6 +456,8 @@ class Renderer:
         self.proxy_metallics = pc.get_metallic
         self.proxy_opacity = pc.get_opacity
         self.proxy_features = pc.get_features
+        self.proxy_incidents = pc.get_incident
+        self.proxy_visibility = pc.get_visibility
 
         self.proxy_idx = proxy_idx
 
@@ -613,6 +619,101 @@ class Renderer:
         print(f"index table cost time = {time_end_buffer - time_start_buffer}")
         
         return self_radiance_buffer, visibility, hit_indices, uvs # [N, 3]
+
+    def render_radiance_with_IsAS(
+            self, 
+            pc: GaussianModel, 
+            ray_dirs_world: torch.Tensor, 
+            ray_origin: torch.Tensor,
+            brdf_color: torch.Tensor,
+            brdf_extra_results: dict,
+            cam: Camera,
+            background: torch.Tensor
+    ):
+        """
+        Render radiance with IsAS
+
+        Args:
+            pc: GaussianModel=
+            ray_dirs_world: [N, 3]
+            ray_origin: [N, 3]
+            brdf_color: 
+            cam: Camera
+        Returns:
+            radiance: [N, 3]
+        """
+        # perpare
+        num_rays = ray_dirs_world.shape[0]
+        block_size = 64
+        out_pbr = torch.zeros((num_rays, 3), dtype=torch.float, requires_grad=True).cuda()
+        out_render = torch.zeros((num_rays, 3), dtype=torch.float, requires_grad=True).cuda()
+        out_opacity = torch.zeros((num_rays, 1), dtype=torch.float, requires_grad=True).cuda()
+        out_albedo = torch.zeros((num_rays, 3), dtype=torch.float, requires_grad=True).cuda()
+        out_roughness = torch.zeros((num_rays, 1), dtype=torch.float, requires_grad=True).cuda()
+        out_metallic = torch.zeros((num_rays, 1), dtype=torch.float, requires_grad=True).cuda()
+        out_diffuse = torch.zeros((num_rays, 3), dtype=torch.float, requires_grad=True).cuda()
+
+        # intersect
+        torch.cuda.synchronize()
+        time_start_buffer = time.time()
+        self.m_intersect_test.render_IsAS(
+            # ---------- Input Rays and AS ----------
+            N=int(num_rays),                       
+            ray_origins=ray_origin,      
+            ray_directions=ray_dirs_world,
+            g_lbvh_info=self.LBVHNode_info, 
+            g_lbvh_aabb=self.LBVHNode_aabb,
+
+            # ---------- Input Geometry Params ----------
+            centers=self.proxy_xyzs,
+            normals=self.proxy_normals,
+            scales=self.proxy_scales,
+            rotates=self.proxy_rotates,
+            opacity=self.proxy_opacity,
+    
+            # ---------- Input PBR Params ----------
+            SHs=self.proxy_features,
+            brdf_colors=brdf_color,
+            diffuse_light=brdf_extra_results["diffuse_light"],
+            albedos=self.proxy_albedos,
+            roughnesses=self.proxy_roughnesses,
+            metallics=self.proxy_metallics,
+
+            # ---------- Output Params ----------
+            out_render=out_render,
+            out_pbr=out_pbr,
+            out_opacity=out_opacity,
+            out_albedo=out_albedo,
+            out_roughness=out_roughness,
+            out_metallic=out_metallic,
+            out_diffuse=out_diffuse,
+        )\
+        .launchRaw(blockSize=(block_size, 1, 1), gridSize=((num_rays + block_size - 1) // block_size, 1, 1))
+        torch.cuda.synchronize()
+        time_end_buffer = time.time()
+        print(f"index table cost time = {time_end_buffer - time_start_buffer}")
+
+        # postprocess
+        out_pbr = out_pbr / out_opacity.clamp_min(1e-5) 
+        out_albedo = out_albedo / out_opacity.clamp_min(1e-5)
+        out_roughness = out_roughness / out_opacity.clamp_min(1e-5)
+        out_metallic = out_metallic / out_opacity.clamp_min(1e-5)
+        out_diffuse = out_diffuse / out_opacity.clamp_min(1e-5)
+
+        def opacity_feilter(r):
+           return r * out_opacity + (1 - out_opacity) * background[:, None, None]
+
+        return {
+            "render": out_render,
+            "depth": None,
+            "normal": None,
+            "pbr": rgb_to_srgb(opacity_feilter(out_pbr)), # [n_sample, 3 rgb]
+            "opacity": out_opacity,
+            "base_color": opacity_feilter(rgb_to_srgb(out_albedo)),
+            "roughness": opacity_feilter(out_roughness),
+            "metallic": opacity_feilter(out_metallic),
+            "diffuse": opacity_feilter(rgb_to_srgb(out_diffuse)),
+        }
     
     def render_SH(self, ray_o, ray_d, cov3D_inv):
         H = ray_d.shape[0]

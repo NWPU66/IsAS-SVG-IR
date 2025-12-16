@@ -83,6 +83,7 @@ def render_view(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: tor
 
     base_color = pc.get_base_color
     roughness = pc.get_roughness
+    metallic = pc.get_metallic
     normal = pc.get_shading_normal
     # incidents = pc.get_incidents  # incident shs
     incidents = pc.get_radiances  # incident radiance
@@ -96,7 +97,7 @@ def render_view(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: tor
     # time1 = time.time()
     if is_training:
         brdf_color, extra_results = rendering_equation4(
-            base_color, roughness, normal, viewdirs, incidents,
+            base_color, roughness, metallic, normal, viewdirs, incidents,
             direct_light_env_light, visibility_precompute=pc._visibility_tracing, 
             incident_dirs_precompute=pc._incident_dirs, incident_areas_precompute=pc._incident_areas)
     else:
@@ -105,7 +106,7 @@ def render_view(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: tor
         extra_results = []
         for i in range(0, means3D.shape[0], chunk_size):
             _brdf_color, _extra_results = rendering_equation4(
-                base_color[i:i + chunk_size], roughness[i:i + chunk_size], 
+                base_color[i:i + chunk_size], roughness[i:i + chunk_size], metallic[i:i + chunk_size],
                 normal[i:i + chunk_size].detach(), viewdirs[i:i + chunk_size], incidents[i:i + chunk_size],
                 direct_light_env_light, 
                 visibility_precompute=pc._visibility_tracing[i:i + chunk_size], 
@@ -140,10 +141,10 @@ def render_view(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: tor
     normal = (normal @ viewpoint_camera.world_view_transform[:3,:3])
     normal = normal.transpose(1,2).reshape(normal.shape[0], -1)
     if is_training:
-        vfeatures = torch.cat([brdf_color, base_color, normal, roughness,
+        vfeatures = torch.cat([brdf_color, base_color, normal, roughness, metallic,
                               extra_results["diffuse_light"]], dim=-1)
     else:
-        vfeatures = torch.cat([brdf_color, base_color, normal, roughness,
+        vfeatures = torch.cat([brdf_color, base_color, normal, roughness, metallic,
                               extra_results["direct"],
                               extra_results["indirect"],], dim=-1)
 
@@ -191,21 +192,23 @@ def render_view(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: tor
         
     if is_training:
         rendered_pbr, rendered_base_color, rendered_shading_normal, rendered_roughness,\
-            rendered_diffuse \
+            rendered_metallic , rendered_diffuse \
             = rendered_vfeature.split([3, 3, 3, 1, 3], dim=0)
         feature_dict.update({"base_color": opacity_feilter(rgb_to_srgb(rendered_base_color)),
                              "diffuse": opacity_feilter(rgb_to_srgb(rendered_diffuse)),
                              "roughness": opacity_feilter(rendered_roughness),
+                             "metallic": opacity_feilter(rendered_metallic),
                              })
     else:
         rendered_pbr, rendered_base_color, rendered_shading_normal, rendered_roughness,\
-            rendered_direct_pbr, rendered_indirect_pbr\
+            rendered_metallic, rendered_direct_pbr, rendered_indirect_pbr\
             = rendered_vfeature.split([3, 3, 3, 1, 3, 3], dim=0)
         feature_dict.update({
                              "base_color": opacity_feilter(rgb_to_srgb(rendered_base_color)),
                              "direct": rgb_to_srgb(rendered_direct_pbr),
                              "indirect": rgb_to_srgb(rendered_indirect_pbr),
                              "roughness": opacity_feilter(rendered_roughness),
+                             "metallic": opacity_feilter(rendered_metallic),
                              })
 
     pbr = rendered_pbr
@@ -225,6 +228,8 @@ def render_view(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: tor
                "visibility_filter": radii > 0,
                "radii": radii,
                "num_rendered": num_rendered,
+               "brdf_color": brdf_color,
+               "brdf_extra_results": extra_results,
                }
 
     results.update(feature_dict)
@@ -255,8 +260,9 @@ def calculate_loss(viewpoint_camera, pc, results, opt, direct_light_env_light, i
     rendered_opacity = results["opacity"]
     rendered_base_color = results["base_color"]
     rendered_roughness = results["roughness"]
+    rendered_metallic = results["metallic"]
     rendered_diffuse = results["diffuse"]
-    rendered_local_lights = results["local_lights"]
+    # rendered_local_lights = results["local_lights"]
     image_mask = viewpoint_camera.image_mask.cuda()
 
     gt_image = viewpoint_camera.original_image.cuda()
@@ -266,6 +272,7 @@ def calculate_loss(viewpoint_camera, pc, results, opt, direct_light_env_light, i
     tb_dict["psnr"] = psnr(rendered_image, gt_image).mean().item()
     tb_dict["ssim"] = ssim_val.item()
     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_val)
+    loss_per_pixel = torch.abs(rendered_image - gt_image)
 
     Ll1_pbr = F.l1_loss(rendered_pbr, gt_image)
     ssim_val_pbr = ssim(rendered_pbr, gt_image)
@@ -273,10 +280,12 @@ def calculate_loss(viewpoint_camera, pc, results, opt, direct_light_env_light, i
     tb_dict["ssim_pbr"] = ssim_val_pbr.item()
     tb_dict["psnr_pbr"] = psnr(rendered_pbr, gt_image).mean().item()
     loss_pbr = (1.0 - opt.lambda_dssim) * Ll1_pbr + opt.lambda_dssim * (1.0 - ssim_val_pbr)
+    loss_pbr_per_pixel = torch.abs(rendered_pbr - gt_image)
     loss = loss + opt.lambda_pbr * loss_pbr
+    loss_per_pixel = loss_per_pixel + opt.lambda_pbr * loss_pbr_per_pixel
 
 
-    if 1:
+    if True:
         pool = torch.nn.MaxPool2d(9, stride=1, padding=4)
         d2n = depth2normal(rendered_depth, image_mask, viewpoint_camera)
         loss_mask = (rendered_opacity * (1 - pool(image_mask))).mean()
@@ -294,11 +303,11 @@ def calculate_loss(viewpoint_camera, pc, results, opt, direct_light_env_light, i
 
         loss += 0.02 * loss_surface
 
-        
         loss += 0.1 * F.mse_loss(pc.get_normals, torch.zeros_like(pc.get_normals))
 
 
     loss_radiance = pc.get_radiance_loss(viewpoint_camera, direct_light_env_light)
+    # TODO - loss_radiance_per_pixel
     loss = loss + opt.lambda_radiance * loss_radiance
 
 
@@ -361,6 +370,12 @@ def calculate_loss(viewpoint_camera, pc, results, opt, direct_light_env_light, i
         tb_dict["loss_roughness_smooth"] = loss_roughness_smooth.item()
         loss = loss + opt.lambda_roughness_smooth * loss_roughness_smooth
     
+    if opt.lambda_metallic_smooth > 0:
+        image_mask = viewpoint_camera.image_mask.cuda()
+        loss_metallic_smooth = first_order_edge_aware_loss(rendered_metallic * image_mask, gt_image * image_mask)
+        tb_dict["loss_metallic_smooth"] = loss_metallic_smooth.item()
+        loss = loss + opt.lambda_metallic_smooth * loss_metallic_smooth
+    
     if opt.lambda_light_smooth > 0:
         image_mask = viewpoint_camera.image_mask.cuda()
         loss_light_smooth = first_order_edge_aware_loss(rendered_diffuse * image_mask, rendered_normal)
@@ -381,6 +396,7 @@ def calculate_loss(viewpoint_camera, pc, results, opt, direct_light_env_light, i
         loss = loss + opt.lambda_normal_smooth * loss_normal_smooth
 
     tb_dict["loss"] = loss.item()
+    tb_dict["loss_per_pixel"] = loss_per_pixel
 
     return loss, tb_dict
 
@@ -517,9 +533,12 @@ def GGX_specular(
     spec = frac / nom
     return spec
 
-def rendering_equation4(base_color, roughness, normals, viewdirs,
+def rendering_equation4(base_color, roughness, metallic, normals, viewdirs,
                               radiance, direct_light_env_light=None,
                               visibility_precompute=None, incident_dirs_precompute=None, incident_areas_precompute=None):
+
+    # TODO - add metallic
+    
     # import time
     # time1 = time.time()
     incident_dirs, incident_areas = incident_dirs_precompute, incident_areas_precompute
@@ -545,7 +564,7 @@ def rendering_equation4(base_color, roughness, normals, viewdirs,
     # transport = transport.repeat_interleave(repeats=4, dim=-1)
 
     specular = ((f_s) * transport).mean(dim=-2) 
-    pbr = ((f_d + f_s) * transport).mean(dim=-2) 
+    pbr = ((f_d + f_s) * transport).mean(dim=-2) # shape [n, 4(vertex_num) * 3(rgb)]
     # time2 = time.time()
     # print(time2 - time1)
     diffuse_light = transport.mean(dim=-2) 

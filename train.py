@@ -122,69 +122,91 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
 
         # Pick a random Camera
         if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras(scale=2.0).copy()   # To load half resolution image
+            viewpoint_stack = [
+                scene.getTrainCameras(scale=1.0).copy(),
+                scene.getTrainCameras(scale=2.0).copy(),
+            ]
 
         loss = 0
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
-
-        """ 
-        ================================================================================
-        Image Space Adaptive Sampling Stage 1:
-
-        Render Image at half resolution.
-        Calculate the "gradient of loss" and "gradient of image".
-        Lead to pj1 and pj2.
-        Image space adaptive sampling probability: pj = norm(sqrt(pj1 * pj2))
-        """
+        viewpoint_cam_idx = randint(0, len(viewpoint_stack) - 1)
+        viewpoint_cam = viewpoint_stack[0].pop(viewpoint_cam_idx)
+        viewpoint_cam_half = viewpoint_stack[1].pop(viewpoint_cam_idx)
 
         # Render Image at half resolution
         if (iteration - 1) == args.debug_from:
             pipe.debug = True
 
         pbr_kwargs["iteration"] = iteration - first_iter
-        render_pkg = render_fn(viewpoint_cam, gaussians, pipe, background,
+        render_pkg = render_fn(viewpoint_cam_half if is_pbr else viewpoint_cam, gaussians, pipe, background,
                                opt=opt, is_training=True, dict_params=pbr_kwargs, iteration=iteration)
 
         viewspace_point_tensor, visibility_filter, radii = \
             render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
-        # Loss
-        # tb_dict = render_pkg["tb_dict"]
-        # loss += render_pkg["loss"]
-        # loss.backward()
-        # gaussians.debug()
+        tb_dict = render_pkg["tb_dict"]
+        loss += render_pkg["loss"]
 
-        # TODO - break down the loss into two parts: d(loss)/d(image) and d(image)/d(theta),
-        # where "theta" is the parameters of the scene.
-        Loss_I = render_pkg["loss"]  # loss
-        I_Theta = render_pkg["pbr"]   # image
+        if not is_pbr:
+            loss.backward()
+        else:
+            """ 
+            ================================================================================
+            Image Space Adaptive Sampling Stage 1:
 
-        # TODO - calculate pj1, pj2 and pj
-        pj1 = torch.ones(3, 400, 400, dtype=torch.float32, device="cuda")
-        pj2 = torch.ones(3, 400, 400, dtype=torch.float32, device="cuda")
-        pj1pj2 = pj1 * pj2
-        pj = torch.sqrt(pj1pj2) / torch.sum(pj1pj2) # convert into [0, 1] as probability
+            Render Image at half resolution.
+            Calculate the "gradient of loss" and "gradient of image".
+            Lead to pj1 and pj2.
+            Image space adaptive sampling probability: pj = norm(sqrt(pj1 * pj2))
+            """
 
-        """ 
-        ================================================================================
-        Image Space Adaptive Sampling Stage 2:
+            # 1. break down the loss into two parts: d(loss)/d(image) and d(image)/d(theta),
+            # where "theta" is the parameters of the scene (pbr params, e.g. albedo, normals, roughness).
+            Loss_I = render_pkg["loss"]  # loss
+            I_Theta = render_pkg["pbr"]   # image
+            theta_params, theta_lr = collect_theta_params(gaussians, pbr_kwargs)
+            dLoss_dI = compute_dLoss_dI(Loss_I, I_Theta)    # H, W
+            dI_dTheta = compute_dI_dtheta(I_Theta, theta_params)    # H, W, m_theta
 
-        Sampling point based on pj at half resolution.
-        Convert point into full resolution using the inverse direction of gradient.
-        Ray tracing these points for two round using modified "pbgi".
-        1st round: For image and d(loss)/d(image)
-        2nd round: For d(loss)/d(theta)
-        d(loss)/d(theta) = 1/N * sum(1/pj * d(loss)/d(image) * d(image)/d(theta))
-        """
+            # 2. calculate pj1, pj2 and pj
+            theta_lr = theta_lr.unsqueeze(0).unsqueeze(0)  # 1, 1, m_theta
+            pj1 = torch.pow(dLoss_dI, 2)    # H, W
+            pj2 = torch.sum(torch.pow(dI_dTheta, 2) * torch.pow(theta_lr, 2), dim=2).squeeze(-1) # H, W
+            pj1pj2 = torch.sqrt(pj1 * pj2)
+            half_pj = torch.clamp(pj1pj2 / (torch.sum(pj1pj2) + 1e-8), min=1e-8, max=1) # convert into [0, 1]
 
-        # TODO - sampling points based on pj and convert to full resolution.
-        pass
+            """ 
+            ================================================================================
+            Image Space Adaptive Sampling Stage 2:
 
-        # TODO - ray tracing
-        pass
+            Sampling point based on pj at half resolution.
+            Convert point into full resolution using the inverse direction of gradient.
+            Ray tracing these points for two round using modified "pbgi".
+            1st round: For image and d(loss)/d(image)
+            2nd round: For d(loss)/d(theta)
+            d(loss)/d(theta) = 1/N * sum(1/pj * d(loss)/d(image) * d(image)/d(theta))
+            """
 
-        # TODO - calculate gradient d(loss)/d(theta)
-        pass
+            # TODO - sampling points based on pj and convert to full resolution.
+            pj = upsampling_half_pj(half_pj)
+            print(f"全分辨率pj形状: {pj.shape} (半分辨率: {half_pj.shape})")
+            sampled_points, sampled_prob = sample_pixels_from_pj(pj, num_samples=1024, replacement=False)
+            sampled_ray_dirs_world, sampled_ray_origin = pixel2ray(viewpoint_cam, sampled_points)
+
+            # TODO - ray tracing
+            result = gaussians.renderer.render_radiance_with_IsAS(
+                gaussians,
+                sampled_ray_dirs_world,
+                sampled_ray_origin,
+                render_pkg["brdf_color"],   # [n_GS, 4 vertex * 3 rgb]
+                render_pkg["brdf_extra_results"],
+                viewpoint_cam,
+                background
+            )   # [n_GS, 3 rgb]
+
+            # TODO - postprocess ans calculate gradient d(loss)/d(theta)
+            loss.backward()
+            
+        gaussians.debug()
 
         with torch.no_grad():
             if pipe.save_training_vis:
@@ -306,12 +328,13 @@ def training_report(tb_writer, iteration, tb_dict, scene: Scene, renderFunc, pip
                     # BRDF
                     base_color = torch.clamp(render_pkg.get("base_color", torch.zeros_like(image)), 0.0, 1.0)
                     roughness = torch.clamp(render_pkg.get("roughness", torch.zeros_like(depth)), 0.0, 1.0)
+                    metallic = torch.clamp(render_pkg.get("metallic", torch.zeros_like(depth)), 0.0, 1.0)
                     image_pbr = render_pkg.get("pbr", torch.zeros_like(image))
 
                     grid = torchvision.utils.make_grid(
                         torch.stack([image, image_pbr, gt_image,
                                      opacity.repeat(3, 1, 1), depth.repeat(3, 1, 1), normal,
-                                     base_color, roughness.expand_as(base_color)], dim=0), nrow=3)
+                                     base_color, roughness.expand_as(base_color), metallic.expand_as(base_color)], dim=0), nrow=3)
 
                     if tb_writer and (idx < 2):
                         tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name),
@@ -364,6 +387,7 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
                 visualization_list.extend([
                     render_pkg["base_color"],
                     render_pkg["roughness"],
+                    render_pkg["metallic"],
                     render_pkg["visibility"],
                     # render_pkg["diffuse"],
                     # render_pkg["radiance"],
@@ -394,6 +418,7 @@ def eval_render(scene, gaussians, render_fn, pipe, background, opt, pbr_kwargs):
     if gaussians.use_pbr:
         os.makedirs(os.path.join(args.model_path, 'eval', 'base_color'), exist_ok=True)
         os.makedirs(os.path.join(args.model_path, 'eval', 'roughness'), exist_ok=True)
+        os.makedirs(os.path.join(args.model_path, 'eval', 'metallic'), exist_ok=True)
         os.makedirs(os.path.join(args.model_path, 'eval', 'lights'), exist_ok=True)
         os.makedirs(os.path.join(args.model_path, 'eval', 'local'), exist_ok=True)
         os.makedirs(os.path.join(args.model_path, 'eval', 'global'), exist_ok=True)
@@ -427,6 +452,8 @@ def eval_render(scene, gaussians, render_fn, pipe, background, opt, pbr_kwargs):
                            os.path.join(args.model_path, 'eval', "base_color", f"{viewpoint.image_name}.png"))
                 save_image(results["roughness"],
                            os.path.join(args.model_path, 'eval', "roughness", f"{viewpoint.image_name}.png"))
+                save_image(results["metallic"],
+                           os.path.join(args.model_path, 'eval', "metallic", f"{viewpoint.image_name}.png"))
                 save_image(results["lights"],
                            os.path.join(args.model_path, 'eval', "lights", f"{viewpoint.image_name}.png"))
                 save_image(results["local_lights"],

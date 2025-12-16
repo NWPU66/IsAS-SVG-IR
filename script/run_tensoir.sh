@@ -32,13 +32,15 @@ do
         --scaling_lr 0.0000 \
         --rotation_lr 0.000 \
         --iterations 50000 \
-        --lambda_base_color_smooth 0.1 \
-        --lambda_roughness_smooth 0.05 \
+        # --lambda_base_color_smooth 0.1 \
+        # --lambda_roughness_smooth 0.05 \
+        # --lambda_metallic_smooth 0.05 \
         --lambda_light_smooth 0.0 \
         --lambda_light 0.00 \
+        --lambda_dssim 0.00 \
         -t render_relight --sample_num 64 \
         --save_training_vis_iteration 200 \
-        --lambda_env_smooth 0.02 \
+        # --lambda_env_smooth 0.02 \
         --env_resolution 32 
 
     python eval_nvs.py --eval \

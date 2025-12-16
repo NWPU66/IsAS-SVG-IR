@@ -6,6 +6,46 @@ import sh_utils;
 #include "mathConstant.slangh"
 #define MAX_STACK_SIZE 64
 
+#define CALCULATE_VERTEX_WEIGHT(uv) \
+    float w0;\
+    float w1;\
+    float w2;\
+    float w3;\
+    w0 = (1 - uv.x) * (1 - uv.y);\
+    w1 = uv.x * (1 - uv.y);\
+    w2 = (1 - uv.x) * uv.y;\
+    w3 = uv.x * uv.y;
+
+#define GET_WEIGHTED_ATTRIBUTE_3(attribute, buffer, hit_index) \
+    float3 attribute;\
+    {\
+        float3 temp[4];\
+        temp[0].x = buffer[hit_index, 0];\
+        temp[1].x = buffer[hit_index, 1];\
+        temp[2].x = buffer[hit_index, 2];\
+        temp[3].x = buffer[hit_index, 3];\
+        temp[0].y = buffer[hit_index, 4];\
+        temp[1].y = buffer[hit_index, 5];\
+        temp[2].y = buffer[hit_index, 6];\
+        temp[3].y = buffer[hit_index, 7];\
+        temp[0].z = buffer[hit_index, 8];\
+        temp[1].z = buffer[hit_index, 9];\
+        temp[2].z = buffer[hit_index, 10];\
+        temp[3].z = buffer[hit_index, 11];\
+        attribute = w0 * temp[0] + w1 * temp[1] + w2 * temp[2] + w3 * temp[3];\
+    }
+
+#define GET_WEIGHTED_ATTRIBUTE_1(attribute, buffer, hit_index) \
+    float attribute;\
+    {\
+        float temp[4];\
+        temp[0] = buffer[hit_index, 0];\
+        temp[1] = buffer[hit_index, 1];\
+        temp[2] = buffer[hit_index, 2];\
+        temp[3] = buffer[hit_index, 3];\
+        attribute = w0 * temp[0] + w1 * temp[1] + w2 * temp[2] + w3 * temp[3];\
+    }
+
 struct GPUBvhNode {
     int index;
     int left;          // pointer to the left child or INVALID_POINTER in case of leaf
@@ -1987,6 +2027,169 @@ void render_radiance_with_sampling_SH(int N,int S, TensorView<float> ray_origins
 
     uvs[gs_index, ray_index, 0] = first_uv.x;
     uvs[gs_index, ray_index, 1] = first_uv.y;
+}
+
+// trace rays with IsAS sampled points
+[AutoPyBindCUDA]
+[CudaKernel]
+[Differentiable]
+void render_IsAS(
+    // ---------- Input Rays and AS ----------
+    int N,                              // number of sampled rays
+    TensorView<float> ray_origins,      // camera center
+    TensorView<float> ray_directions,
+    TensorView<int> g_lbvh_info, 
+    TensorView<float> g_lbvh_aabb,
+
+    // ---------- Input Geometry Params ----------
+    TensorView<float> centers, 
+    TensorView<float> normals, 
+    TensorView<float> scales, 
+    TensorView<float> rotates, 
+    TensorView<float> opacity, 
+    
+    // ---------- Input PBR Params ----------
+    DiffTensorView SHs
+    DiffTensorView brdf_colors,  // [n_sampled_rays, 4 vertex * 3 rgb]
+    DiffTensorView diffuse_light,
+    DiffTensorView albedos,
+    DiffTensorView roughnesses,
+    DiffTensorView metallics,
+
+    // ---------- Output Params ----------
+    DiffTensorView out_render,
+    DiffTensorView out_pbr,
+    DiffTensorView out_opacity,
+    DiffTensorView out_albedo,
+    DiffTensorView out_roughness,
+    DiffTensorView out_metallic,
+    DiffTensorView out_diffuse
+)
+{
+    uint3 dispatchIdx = cudaThreadIdx() + cudaBlockIdx() * cudaBlockDim();
+
+    if (dispatchIdx.x >= N) return;
+    uint ray_index = dispatchIdx.x; // blockSize: n_sampled_rays, 1, 1
+
+    float3 ray_direction;
+    ray_direction.x = ray_directions[ray_index, 0];
+    ray_direction.y = ray_directions[ray_index, 1];
+    ray_direction.z = ray_directions[ray_index, 2];
+
+    ray_direction = normalize(ray_direction);
+    int index_hit = -1;
+    float2 uv = float2(0.0f);
+
+    float3 xyz;
+    xyz.x = ray_origins[0];
+    xyz.y = ray_origins[1];
+    xyz.z = ray_origins[2];
+
+    float test_T = 1.0f;
+
+    float t_min = 0.042f;
+    float t_max = 1.5f;     // float t_max = 0.2f;
+    float t_hit = 0.f;
+
+    float3 debug_res;
+    bool done = false;
+    float3 rayo = xyz;
+    float3 rayd = ray_direction;
+
+    float3 sh = float3(0.0f);
+    float3 pbr = float3(0.0f);
+    float3 albedo = float3(0.0f);
+    float3 roughness = float3(0.0f);
+    float3 metallic = float3(0.0f);
+    float3 diffuse = float3(0.0f);
+
+    int first_hit = -1;
+    float2 first_uv = float2(0.0f);
+
+    while ((test_T > 0.001f) && (!done))
+    {
+        bool hit = gs_bvh_hit(g_lbvh_info, g_lbvh_aabb, centers, scales, rotates, colors, opacity, cov3D_inverse,
+                              rayo, rayd, t_min, t_max, t_hit, debug_res, index_hit, uv);
+        
+        if (hit)
+        {
+            if (test_T < 0.001f)
+            {
+                test_T = 0.00099f;
+                // test_T = 0.0f;
+                done = true;
+                break;
+            }
+
+            if (first_hit == -1)
+            {
+                first_hit = index_hit;
+                first_uv = uv;
+                t_min = 0.01f;
+            }
+            float3 hit_gs_pos;
+            hit_gs_pos.x = centers[index_hit, 0];
+            hit_gs_pos.y = centers[index_hit, 1];
+            hit_gs_pos.z = centers[index_hit, 2];
+
+            float3 sh_dir = normalize(hit_gs_pos - rayo);
+            rayo = rayo + rayd * t_hit;
+            // t_min = t_hit + 0.005f;
+            // t_max = t_min + 1.0f;
+            
+            CALCULATE_VERTEX_WEIGHT(uv);
+            GET_WEIGHTED_ATTRIBUTE_3(brdf_color, brdf_colors, hit_index);
+            GET_WEIGHTED_ATTRIBUTE_3(_albedo, albedos, hit_index);
+            GET_WEIGHTED_ATTRIBUTE_1(_roughness, roughnesses, hit_index);
+            GET_WEIGHTED_ATTRIBUTE_1(_metallic, metallics, hit_index);
+            GET_WEIGHTED_ATTRIBUTE_1(_diffuse, diffuse_light, hit_index);
+
+            float weight = (1-debug_res.x) * test_T;
+            sh += eval_sh(SHs, index_hit, sh_dir) * weight;
+            pbr += brdf_color * weight;
+            albedo += _albedo * weight;
+            roughness += _roughness * weight;
+            metallic += _metallic * weight;
+            diffuse_light += _diffuse * weight;
+
+            test_T = test_T * debug_res.x;
+            if (test_T < 0.2f)
+            {
+                visibable = false;
+                // test_T = 0.0f;
+            }
+            // done = true;
+        }
+        else
+        {
+            done = true;
+        }
+    }
+
+    // post processing
+    out_render[ray_index, 0] = sh.x;
+    out_render[ray_index, 1] = sh.y;
+    out_render[ray_index, 2] = sh.z;
+
+    pbr = clamp(pbr, 0.0f, 10.0f);
+    // pbr = pow(pbr, 1 / 2.2);
+    out_pbr[ray_index, 0] = pbr.x;
+    out_pbr[ray_index, 1] = pbr.y;
+    out_pbr[ray_index, 2] = pbr.z;
+
+    out_opacity[ray_index] = 1.0f - test_T;
+
+    out_albedo[ray_index, 0] = albedo.x;
+    out_albedo[ray_index, 1] = albedo.y;
+    out_albedo[ray_index, 2] = albedo.z;
+
+    out_roughness[ray_index] = roughness;
+
+    out_metallic[ray_index] = metallic;
+
+    out_diffuse[ray_index, 0] = diffuse.x;
+    out_diffuse[ray_index, 1] = diffuse.y;
+    out_diffuse[ray_index, 2] = diffuse.z;
 }
 
 // colors actually means normals

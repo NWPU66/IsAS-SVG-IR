@@ -89,6 +89,7 @@ class OptimizationParams(ParamGroup):
 
         self.base_color_lr = 0.01
         self.roughness_lr = 0.01
+        self.metallic_lr = 0.01
         self.light_lr = 0.001
         self.light_rest_lr = 0.0001
         self.light_init = 3.0
@@ -132,6 +133,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_base_color = 0.0
         self.lambda_base_color_smooth = 0.0
         self.lambda_roughness_smooth = 0.0
+        self.lambda_metallness_smooth = 0.0
         self.lambda_light_smooth = 0.0
         self.lambda_visibility_smooth = 0.0
         self.lambda_visibility = 0.0

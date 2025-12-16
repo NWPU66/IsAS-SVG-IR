@@ -175,7 +175,7 @@ if __name__ == '__main__':
             elif capture_type == "normal":
                 render_pkg[capture_type] = render_pkg[capture_type] * 0.5 + 0.5
                 render_pkg[capture_type] = render_pkg[capture_type] + (1 - render_pkg['opacity']) * bg
-            elif capture_type in ["base_color", "roughness", "visibility"]:
+            elif capture_type in ["base_color", "roughness", "metallic", "visibility"]:
                 render_pkg[capture_type] = render_pkg[capture_type] + (1 - render_pkg['opacity']) * bg
             elif capture_type in ["pbr", "pbr_env", "render"]:
                 render_pkg[capture_type] = render_pkg[capture_type]
