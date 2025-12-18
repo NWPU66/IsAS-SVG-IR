@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from scene.cameras import Camera
 
 
-def collect_theta_params(gaussians: GaussianModel, pbr_kwargs: dict) -> Tuple[torch.Tensor, torch.Tensor]:
+def collect_theta_params(gaussians: GaussianModel, pbr_kwargs: dict | None) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Collect all parameters from the gaussian model and the pbr model.
 
@@ -93,14 +93,6 @@ def compute_dI_dtheta(
     if grad is not None:
         # reshape grad
         dI_dtheta = grad.reshape(3, W, H, -1)  # 3, H, W, m_theta
-
-        # calculate grayscale
-        grayscale_weights = torch.tensor(
-            [0.299, 0.587, 0.114], dtype=torch.float32, device="cuda"
-        ).view(3, 1, 1, 1)
-        dI_dtheta = torch.sum(dI_dtheta * grayscale_weights, dim=0)  # 1, H, W, m_theta
-        dI_dtheta = dI_dtheta.unsqueeze(0)  # H, W, m_theta
-
         # clear cache
         torch.cuda.empty_cache()
     else:
@@ -133,14 +125,6 @@ def compute_dLoss_dI(Loss: torch.Tensor, I_Theta: torch.Tensor) -> torch.Tensor:
     if grad is not None:
         # reshape
         dLoss_dI = grad.reshape(I_Theta.shape)  # 3, H, W
-
-        # calculate grayscale
-        grayscale_weights = torch.tensor(
-            [0.299, 0.587, 0.114], dtype=torch.float32, device="cuda"
-        ).view(3, 1, 1)
-        dLoss_dI = torch.sum(dLoss_dI * grayscale_weights, dim=0)  # 1, H, W
-        dLoss_dI = dLoss_dI.unsqueeze(0)  # H, W
-
         # clear cache
         torch.cuda.empty_cache()
     else:
@@ -163,7 +147,7 @@ def upsampling_half_pj(
         full_pj: tensor, the full resolution image
     """
 
-    half_pj_4d = half_pj.unsqueeze(0).unsqueeze(0)  # [1, 1, H_half, W_half]
+    half_pj_4d = half_pj.unsqueeze(0)  # [1, 3, H_half, W_half]
     pj_4d = F.interpolate(
         half_pj_4d,
         scale_factor=scale_factor,
@@ -172,8 +156,8 @@ def upsampling_half_pj(
             True if mode == "bilinear" else None
         ),  # bilinear需要指定align_corners
     )
-    pj = pj_4d.squeeze(0).squeeze(0)
-    pj = torch.clamp(pj / (pj.sum() + 1e-8), min=1e-8)  # 最小概率限制为1e-8
+    pj = pj_4d.squeeze(0)   # [3, H, W]
+    pj = torch.clamp(pj / pj.sum().clamp_min(1e-8), min=1e-8)  # 最小概率限制为1e-8
     return pj
 
 

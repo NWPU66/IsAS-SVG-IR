@@ -23,6 +23,7 @@ from utils.graphics_utils import rgb_to_srgb
 from torchvision.utils import save_image, make_grid
 from lpipsPyTorch import lpips
 from scene.utils import save_render_orb, save_depth_orb, save_normal_orb, save_albedo_orb, save_roughness_orb
+from utils.IsAS_utils import *
 
 
 def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams, is_pbr=False):
@@ -33,7 +34,7 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
     Setup Gaussians
     """
     gaussians = GaussianModel(dataset.sh_degree, render_type=args.type)
-    scene = Scene(dataset, gaussians)
+    scene = Scene(dataset, gaussians, resolution_scales=[1.0, 2.0, 4.0, 8.0])   # To load half resolution image
     if args.checkpoint:
         print("Create Gaussians from checkpoint {}".format(args.checkpoint))
         first_iter = gaussians.create_from_ckpt(args.checkpoint, restore_optimizer=True)
@@ -121,49 +122,32 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
 
         # Pick a random Camera
         if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_stack = [
+                scene.getTrainCameras(scale=1.0).copy(),
+                scene.getTrainCameras(scale=2.0).copy(),
+            ]
 
         loss = 0
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
+        viewpoint_cam_idx = randint(0, len(viewpoint_stack) - 1)
+        viewpoint_cams: List[Camera] = [
+            viewpoint_stack[0].pop(viewpoint_cam_idx),
+            viewpoint_stack[1].pop(viewpoint_cam_idx),  # half resolution
+        ]
 
-        # Render
         if (iteration - 1) == args.debug_from:
             pipe.debug = True
 
         pbr_kwargs["iteration"] = iteration - first_iter
-        render_pkg = render_fn(viewpoint_cam, gaussians, pipe, background,
+        render_pkg = render_fn(viewpoint_cams, gaussians, pipe, background,
                                opt=opt, is_training=True, dict_params=pbr_kwargs, iteration=iteration)
 
         viewspace_point_tensor, visibility_filter, radii = \
             render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
-        # Loss
         tb_dict = render_pkg["tb_dict"]
         loss += render_pkg["loss"]
         loss.backward()
         gaussians.debug()
-
-        # # test part 
-        # canonical_rays = scene.get_canonical_rays()
-        # # NOTE: mask normal map by view direction to avoid skip value
-        # H, W = viewpoint_cam.image_height, viewpoint_cam.image_width
-        # c2w = torch.inverse(viewpoint_cam.world_view_transform.T)  # [4, 4]
- 
-        # view_dirs = -(
-        #     (F.normalize(canonical_rays[:, None, :], p=2, dim=-1))  # [HW, 3, 3]
-        #     # .sum(dim=-1)
-        #     .reshape(H, W, 3)
-        # )  # [H, W, 3]
-
-        # rayo = viewpoint_cam.camera_center
-        # # rayo = torch.zeros_like(rayo)
-
-        # rayo = torch.tensor([0.0, 0.0, 18.0], device="cuda").repeat(H, W, 1)
-
-        # render_res = gaussians.renderer.render_SH(rayo, view_dirs, gaussians.get_inverse_covariance())
-        # save_image(render_res.permute(2, 0, 1), os.path.join(args.model_path, "visualize", f"{viewpoint_cam.image_name}.png"))
-        # exit()
-
 
         with torch.no_grad():
             if pipe.save_training_vis:
@@ -285,12 +269,13 @@ def training_report(tb_writer, iteration, tb_dict, scene: Scene, renderFunc, pip
                     # BRDF
                     base_color = torch.clamp(render_pkg.get("base_color", torch.zeros_like(image)), 0.0, 1.0)
                     roughness = torch.clamp(render_pkg.get("roughness", torch.zeros_like(depth)), 0.0, 1.0)
+                    metallic = torch.clamp(render_pkg.get("metallic", torch.zeros_like(depth)), 0.0, 1.0)
                     image_pbr = render_pkg.get("pbr", torch.zeros_like(image))
 
                     grid = torchvision.utils.make_grid(
                         torch.stack([image, image_pbr, gt_image,
                                      opacity.repeat(3, 1, 1), depth.repeat(3, 1, 1), normal,
-                                     base_color, roughness.expand_as(base_color)], dim=0), nrow=3)
+                                     base_color, roughness.expand_as(base_color), metallic.expand_as(base_color)], dim=0), nrow=3)
 
                     if tb_writer and (idx < 2):
                         tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name),
@@ -343,6 +328,7 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
                 visualization_list.extend([
                     render_pkg["base_color"],
                     render_pkg["roughness"],
+                    render_pkg["metallic"],
                     render_pkg["visibility"],
                     # render_pkg["diffuse"],
                     # render_pkg["radiance"],
@@ -373,6 +359,7 @@ def eval_render(scene, gaussians, render_fn, pipe, background, opt, pbr_kwargs):
     if gaussians.use_pbr:
         os.makedirs(os.path.join(args.model_path, 'eval', 'base_color'), exist_ok=True)
         os.makedirs(os.path.join(args.model_path, 'eval', 'roughness'), exist_ok=True)
+        os.makedirs(os.path.join(args.model_path, 'eval', 'metallic'), exist_ok=True)
         os.makedirs(os.path.join(args.model_path, 'eval', 'lights'), exist_ok=True)
         os.makedirs(os.path.join(args.model_path, 'eval', 'local'), exist_ok=True)
         os.makedirs(os.path.join(args.model_path, 'eval', 'global'), exist_ok=True)
@@ -406,6 +393,8 @@ def eval_render(scene, gaussians, render_fn, pipe, background, opt, pbr_kwargs):
                            os.path.join(args.model_path, 'eval', "base_color", f"{viewpoint.image_name}.png"))
                 save_image(results["roughness"],
                            os.path.join(args.model_path, 'eval', "roughness", f"{viewpoint.image_name}.png"))
+                save_image(results["metallic"],
+                           os.path.join(args.model_path, 'eval', "metallic", f"{viewpoint.image_name}.png"))
                 save_image(results["lights"],
                            os.path.join(args.model_path, 'eval', "lights", f"{viewpoint.image_name}.png"))
                 save_image(results["local_lights"],
@@ -435,7 +424,8 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument('--gui', action='store_true', default=False, help="use gui")
-    parser.add_argument('-t', '--type', choices=['render', 'normal', 'render_relight'], default='render')
+    parser.add_argument('-t', '--type', choices=['render', 'normal', 'render_relight'
+                                                 ], default='render')
     parser.add_argument("--test_interval", type=int, default=2500)
     parser.add_argument("--save_interval", type=int, default=5000)
     parser.add_argument("--quiet", action="store_true")

@@ -59,9 +59,9 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
     ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
 
     if size_average:
-        return ssim_map.mean()
+        return ssim_map.mean(), ssim_map
     else:
-        return ssim_map.mean(1).mean(1).mean(1)
+        return ssim_map.mean(1).mean(1).mean(1), ssim_map
 
 
 def cal_gradient(data):
@@ -101,8 +101,11 @@ def bilateral_smooth_loss(data, image, mask):
 def second_order_edge_aware_loss(data, img):
     return (spatial_gradient(data[None], order=2)[0, :, [0, 2]].abs() * torch.exp(-10*spatial_gradient(img[None], order=1)[0].abs())).sum(1).mean()
 
-def first_order_edge_aware_loss(data, img):
-    return (spatial_gradient(data[None], order=1)[0].abs() * torch.exp(-spatial_gradient(img[None], order=1)[0].abs())).sum(1).mean()
+def first_order_edge_aware_loss(data, img, dict_params = None):
+    loss = (spatial_gradient(data[None], order=1)[0].abs() * torch.exp(-spatial_gradient(img[None], order=1)[0].abs())).sum(1)
+    if dict_params is not None and isinstance(dict_params, dict):
+        dict_params["loss_per_pixel"] = loss
+    return loss.mean()
 
 def first_order_edge_aware_norm_loss(data, img):
     return (spatial_gradient(data[None], order=1)[0].abs() * torch.exp(-spatial_gradient(img[None], order=1)[0].norm(dim=1, keepdim=True))).sum(1).mean()
