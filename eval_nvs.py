@@ -36,6 +36,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     if gaussians.use_pbr:
         base_color_path = os.path.join(model_path, name, "ours_{}".format(iteration), "base_color")
         roughness_path = os.path.join(model_path, name, "ours_{}".format(iteration), "roughness")
+        metallic_path = os.path.join(model_path, name, "ours_{}".format(iteration), "metallic")
         lights_path = os.path.join(model_path, name, "ours_{}".format(iteration), "lights")
         local_lights_path = os.path.join(model_path, name, "ours_{}".format(iteration), "local_lights")
         # global_lights_path = os.path.join(model_path, name, "ours_{}".format(iteration), "global_lights")
@@ -43,6 +44,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         indirect_path = os.path.join(model_path, name, "ours_{}".format(iteration), "indirect")
         makedirs(base_color_path, exist_ok=True)
         makedirs(roughness_path, exist_ok=True)
+        makedirs(metallic_path, exist_ok=True)
         makedirs(lights_path, exist_ok=True)
         makedirs(local_lights_path, exist_ok=True)
         # makedirs(global_lights_path, exist_ok=True)
@@ -69,6 +71,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
             save_image(torch.cat((results["pbr"], mask), dim=0) , os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
             save_image(torch.cat((results["base_color"], mask), dim=0), os.path.join(base_color_path, '{0:05d}'.format(idx) + ".png"))
             save_image(torch.cat((results["roughness"], mask), dim=0), os.path.join(roughness_path, '{0:05d}'.format(idx) + ".png"))
+            save_image(torch.cat((results["metallic"], mask), dim=0), os.path.join(metallic_path, '{0:05d}'.format(idx) + ".png"))
             save_image(torch.cat((results["lights"], mask), dim=0), os.path.join(lights_path, '{0:05d}'.format(idx) + ".png"))
             save_image(torch.cat((results["local_lights"], mask), dim=0), os.path.join(local_lights_path, '{0:05d}'.format(idx) + ".png"))
             save_image(torch.cat((results["visibility"], mask), dim=0), os.path.join(visibility_path, '{0:05d}'.format(idx) + ".png"))

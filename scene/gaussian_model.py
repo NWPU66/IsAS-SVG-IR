@@ -122,6 +122,7 @@ class GaussianModel:
         if self.use_pbr:
             self.base_color_activation = lambda x: torch.sigmoid(x) * 0.77 + 0.03
             self.roughness_activation = lambda x: torch.sigmoid(x) * 0.9 + 0.09
+            self.metallic_activation = lambda x: torch.sigmoid(x) * 0.9 + 0.09
             self.inverse_roughness_activation = lambda y: inverse_sigmoid((y-0.09) / 0.9)
 
     def __init__(self, sh_degree: int, render_type='render'):
@@ -154,6 +155,7 @@ class GaussianModel:
         if self.use_pbr:
             self._base_color = torch.empty(0)
             self._roughness = torch.empty(0)
+            self._metallic = torch.empty(0)
             self._incidents_dc = torch.empty(0)
             self._incidents_rest = torch.empty(0)
             self._visibility_dc = torch.empty(0)
@@ -214,6 +216,7 @@ class GaussianModel:
             captured_list.extend([
                 self._base_color,
                 self._roughness,
+                self._metallic,
                 self._incidents_dc,
                 self._incidents_rest,
                 self._visibility_dc,
@@ -244,15 +247,16 @@ class GaussianModel:
         if len(model_args) > 15 and self.use_pbr:
             (self._base_color,
              self._roughness,
+             self._metallic,
              self._incidents_dc,
              self._incidents_rest,
              self._visibility_dc,
              self._visibility_rest,
-             ) = model_args[15:21]
-            if (len(model_args) > 21):
-                self._radiances = model_args[21]
-                if len(model_args) > 22:
-                    self._radiance_ratio = model_args[22]
+             ) = model_args[15:22]
+            if (len(model_args) > 22):
+                self._radiances = model_args[22]
+                if len(model_args) > 23:
+                    self._radiance_ratio = model_args[23]
 
         if is_training:
             self.training_setup(training_args)
@@ -346,13 +350,17 @@ class GaussianModel:
     def get_roughness(self):
         return torch.nan_to_num(self.roughness_activation(self._roughness), nan=1e-8)
     
+    # @property
+    # def get_metallic(self):
+    #     return torch.ones_like(self.get_roughness) * 0.02
+
     @property
     def get_metallic(self):
-        return torch.ones_like(self.get_roughness) * 0.02
+        return torch.nan_to_num(self.metallic_activation(self._metallic), nan=1e-8)
 
     @property
     def get_brdf(self):
-        return torch.cat([self.get_base_color, self.get_roughness], dim=-1)
+        return torch.cat([self.get_base_color, self.get_roughness, self.get_metallic], dim=-1)
 
     def get_by_names(self, names):
         if len(names) == 0:
@@ -389,7 +397,7 @@ class GaussianModel:
     def attribute_names(self):
         attribute_names = ['xyz', 'normal', 'shs_dc', 'shs_rest', 'scaling', 'rotation', 'opacity']
         if self.use_pbr:
-            attribute_names.extend(['base_color', 'roughness',
+            attribute_names.extend(['base_color', 'roughness', 'metallic'
                                     'incidents_dc', 'incidents_rest',
                                     'visibility_dc', 'visibility_rest'])
         return attribute_names
@@ -655,21 +663,24 @@ class GaussianModel:
             if len(model_args) > 15 and (not from_gs):
                 (self._base_color,
                  self._roughness,
+                 self._metallic,
                  self._incidents_dc,
                  self._incidents_rest,
                  self._visibility_dc,
                  self._visibility_rest,
-                 ) = model_args[15:21]
-                if len(model_args) > 21:
-                    self._radiances = model_args[21]
-                    if len(model_args) > 22:
-                        self._radiance_ratio = model_args[22]
+                 ) = model_args[15:22]
+                if len(model_args) > 22:
+                    self._radiances = model_args[22]
+                    if len(model_args) > 23:
+                        self._radiance_ratio = model_args[23]
             else:
                 self._base_color = nn.Parameter(torch.zeros_like(self._xyz).repeat(1, self.vertex_num).requires_grad_(True))
                 self._normal = nn.Parameter(torch.zeros_like(self._xyz).repeat(1, self.vertex_num).requires_grad_(True))
                 roughness = torch.zeros_like(self._xyz[..., :1])
                 # roughness = self.inverse_roughness_activation(torch.full((self._xyz.shape[0], 1), 0.9, dtype=torch.float, device="cuda"))
                 self._roughness = nn.Parameter(roughness.requires_grad_(True).repeat(1, self.vertex_num))
+                metallic = torch.zeros_like(self._xyz[..., :1])
+                self._metallic = nn.Parameter(metallic.requires_grad_(True).repeat(1, self.vertex_num))
                 incidents = torch.zeros((self._xyz.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
 
                 self._incidents_dc = nn.Parameter(
@@ -722,9 +733,11 @@ class GaussianModel:
         if self.use_pbr:
             base_color = torch.zeros_like(fused_point_cloud)
             roughness = torch.zeros((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")
+            metallic = torch.zeros((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")
 
             self._base_color = nn.Parameter(base_color.requires_grad_(True))
             self._roughness = nn.Parameter(roughness.requires_grad_(True))
+            self._metallic = nn.Parameter(metallic.requires_grad_(True))
 
             incidents = torch.zeros((self._xyz.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
             self._incidents_dc = nn.Parameter(incidents[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))
@@ -742,13 +755,13 @@ class GaussianModel:
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         l = [
-            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
-            {'params': [self._normal], 'lr': training_args.normal_lr, "name": "normal"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
-            {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
-            {'params': [self._shs_dc], 'lr': training_args.sh_lr, "name": "f_dc"},
-            {'params': [self._shs_rest], 'lr': training_args.sh_lr / 20.0, "name": "f_rest"}
+            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz", "optimized_in_IsAS":False},
+            {'params': [self._normal], 'lr': training_args.normal_lr, "name": "normal", "optimized_in_IsAS":False},
+            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation", "optimized_in_IsAS":False},
+            {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling", "optimized_in_IsAS":False},
+            {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity", "optimized_in_IsAS":False},
+            {'params': [self._shs_dc], 'lr': training_args.sh_lr, "name": "f_dc", "optimized_in_IsAS":False},
+            {'params': [self._shs_rest], 'lr': training_args.sh_lr / 20.0, "name": "f_rest", "optimized_in_IsAS":False},
         ]
 
         if self.use_pbr:
@@ -758,12 +771,13 @@ class GaussianModel:
                 training_args.visibility_rest_lr = training_args.visibility_lr / 20.0
 
             l.extend([
-                {'params': [self._base_color], 'lr': training_args.base_color_lr, "name": "base_color"},
-                {'params': [self._roughness], 'lr': training_args.roughness_lr, "name": "roughness"},
-                {'params': [self._incidents_dc], 'lr': training_args.light_lr, "name": "incidents_dc"},
-                {'params': [self._incidents_rest], 'lr': training_args.light_rest_lr, "name": "incidents_rest"},
-                {'params': [self._visibility_dc], 'lr': training_args.visibility_lr, "name": "visibility_dc"},
-                {'params': [self._visibility_rest], 'lr': training_args.visibility_rest_lr, "name": "visibility_rest"},
+                {'params': [self._base_color], 'lr': training_args.base_color_lr, "name": "base_color", "optimized_in_IsAS":True},
+                {'params': [self._roughness], 'lr': training_args.roughness_lr, "name": "roughness", "optimized_in_IsAS":True},
+                {'params': [self._metallic], 'lr': training_args.metallic_lr, "name": "metallic", "optimized_in_IsAS":True},
+                {'params': [self._incidents_dc], 'lr': training_args.light_lr, "name": "incidents_dc", "optimized_in_IsAS":True},
+                {'params': [self._incidents_rest], 'lr': training_args.light_rest_lr, "name": "incidents_rest", "optimized_in_IsAS":True},
+                {'params': [self._visibility_dc], 'lr': training_args.visibility_lr, "name": "visibility_dc", "optimized_in_IsAS":True},
+                {'params': [self._visibility_rest], 'lr': training_args.visibility_rest_lr, "name": "visibility_rest", "optimized_in_IsAS":True},
             ])
 
         self.optimizer = torch.optim.Adam(l, lr=1e-4, eps=1e-15)
@@ -793,6 +807,8 @@ class GaussianModel:
                 self._base_color.grad[torch.where(torch.isnan(self._base_color.grad))] = 0.0
             if self._normal.grad is not None:
                 self._normal.grad[torch.where(torch.isnan(self._normal.grad))] = 0.0
+            if self._metallic.grad is not None:
+                self._metallic.grad[torch.where(torch.isnan(self._metallic.grad))] = 0.0
 
     def replace_nan_to_zero(self):
         self._xyz = torch.nan_to_num(self._xyz, nan=0.0)
@@ -805,6 +821,7 @@ class GaussianModel:
         if self.use_pbr:
             self._roughness = torch.nan_to_num(self._roughness, nan=1e-6)
             self._base_color = torch.nan_to_num(self._base_color, nan=0.0)
+            self._metallic = torch.nan_to_num(self._metallic, nan=1e-6)
 
     def step(self):
         self.replace_nangrad_to_zero()
@@ -841,6 +858,8 @@ class GaussianModel:
                 l.append('normal_{}'.format(i))
             for i in range(self._normal.shape[1]):
                 l.append('roughness_{}'.format(i))
+            for i in range(self._normal.shape[1]):
+                l.append('metallic_{}'.format(i))
             for i in range(self._incidents_dc.shape[1] * self._incidents_dc.shape[2]):
                 l.append('incidents_dc_{}'.format(i))
             for i in range(self._incidents_rest.shape[1] * self._incidents_rest.shape[2]):
@@ -869,6 +888,7 @@ class GaussianModel:
                 self._base_color.detach().cpu().numpy(),
                 self._normal.detach().cpu().numpy(),
                 self._roughness.detach().cpu().numpy(),
+                self._metallic.detach().cpu().numpy(),
                 self._incidents_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy(),
                 self._incidents_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy(),
                 self._visibility_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy(),
@@ -961,10 +981,19 @@ class GaussianModel:
 
             # roughness = np.asarray(plydata.elements[0]["roughness"])[..., np.newaxis]
 
+            metallic_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("metallic")]
+            metallic_names = sorted(shading_normal_names, key=lambda x: int(x.split('_')[-1]))
+            metallic = np.zeros((xyz.shape[0], len(metallic_names)))
+
+            for idx, attr_name in enumerate(shading_normal_names):
+                metallic[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
             self._base_color = nn.Parameter(
                 torch.tensor(base_color, dtype=torch.float, device="cuda").requires_grad_(True))
             self._roughness = nn.Parameter(
                 torch.tensor(roughness, dtype=torch.float, device="cuda").requires_grad_(True))
+            self._metallic = nn.Parameter(
+                torch.tensor(metallic, dtype=torch.float, device="cuda").requires_grad_(True))
 
             incidents_dc = np.zeros((xyz.shape[0], 3, 1))
             incidents_dc[:, 0, 0] = np.asarray(plydata.elements[0]["incidents_dc_0"])
@@ -1056,6 +1085,7 @@ class GaussianModel:
         if self.use_pbr:
             self._base_color = optimizable_tensors["base_color"]
             self._roughness = optimizable_tensors["roughness"]
+            self._metallic = optimizable_tensors["metallic"]
             self._incidents_dc = optimizable_tensors["incidents_dc"]
             self._incidents_rest = optimizable_tensors["incidents_rest"]
             self._visibility_dc = optimizable_tensors["visibility_dc"]
@@ -1088,7 +1118,7 @@ class GaussianModel:
         return optimizable_tensors
 
     def densification_postfix(self, new_xyz, new_normal, new_shs_dc, new_shs_rest, new_opacities, new_scaling,
-                              new_rotation, new_base_color=None, new_roughness=None,
+                              new_rotation, new_base_color=None, new_roughness=None, new_metallic=None,
                               new_incidents_dc=None, new_incidents_rest=None,
                               new_visibility_dc=None, new_visibility_rest=None):
         d = {"xyz": new_xyz,
@@ -1103,6 +1133,7 @@ class GaussianModel:
             d.update({
                 "base_color": new_base_color,
                 "roughness": new_roughness,
+                "metallic": new_metallic,
                 "incidents_dc": new_incidents_dc,
                 "incidents_rest": new_incidents_rest,
                 "visibility_dc": new_visibility_dc,
@@ -1128,6 +1159,7 @@ class GaussianModel:
         if self.use_pbr:
             self._base_color = optimizable_tensors["base_color"]
             self._roughness = optimizable_tensors["roughness"]
+            self._metallic = optimizable_tensors["metallic"]
             self._incidents_dc = optimizable_tensors["incidents_dc"]
             self._incidents_rest = optimizable_tensors["incidents_rest"]
             self._visibility_dc = optimizable_tensors["visibility_dc"]
@@ -1167,6 +1199,7 @@ class GaussianModel:
         if self.use_pbr:
             new_base_color = self._base_color[selected_pts_mask].repeat(N, 1)
             new_roughness = self._roughness[selected_pts_mask].repeat(N, 1)
+            new_metallic = self._metallic[selected_pts_mask].repeat(N, 1)
             new_incidents_dc = self._incidents_dc[selected_pts_mask].repeat(N, 1, 1)
             new_incidents_rest = self._incidents_rest[selected_pts_mask].repeat(N, 1, 1)
             new_visibility_dc = self._visibility_dc[selected_pts_mask].repeat(N, 1, 1)
@@ -1174,6 +1207,7 @@ class GaussianModel:
             args.extend([
                 new_base_color,
                 new_roughness,
+                new_metallic,
                 new_incidents_dc,
                 new_incidents_rest,
                 new_visibility_dc,
@@ -1210,6 +1244,7 @@ class GaussianModel:
         if self.use_pbr:
             new_base_color = self._base_color[selected_pts_mask]
             new_roughness = self._roughness[selected_pts_mask]
+            new_metallic = self._metallic[selected_pts_mask]
             new_incidents_dc = self._incidents_dc[selected_pts_mask]
             new_incidents_rest = self._incidents_rest[selected_pts_mask]
             new_visibility_dc = self._visibility_dc[selected_pts_mask]
@@ -1218,6 +1253,7 @@ class GaussianModel:
             args.extend([
                 new_base_color,
                 new_roughness,
+                new_metallic,
                 new_incidents_dc,
                 new_incidents_rest,
                 new_visibility_dc,

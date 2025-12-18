@@ -88,10 +88,10 @@ class Scene:
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         for resolution_scale in resolution_scales:
-            print("Loading Training Cameras")
+            print(f"Loading Training Cameras at scale {resolution_scale}")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale,
                                                                             args)
-            print("Loading Test Cameras")
+            print(f"Loading Test Cameras at scale {resolution_scale}")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale,
                                                                            args)
 

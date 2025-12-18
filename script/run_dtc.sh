@@ -35,6 +35,7 @@ do
         --iterations 50000 \
         --lambda_base_color_smooth 0.005 \
         --lambda_roughness_smooth 0.005 \
+        --lambda_metallic_smooth 0.005 \
         --lambda_light_smooth 0.0 \
         --lambda_light 0.00 \
         -t render_relight --sample_num 32 \
