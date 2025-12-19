@@ -17,7 +17,7 @@ class DirectLightMap:
         
     def training_setup(self, training_args: OptimizationParams):
         l = [
-            {'params': [self.env], 'lr': training_args.env_lr, "name": "env"}
+            {'params': [self.env], 'lr': training_args.env_lr, "name": "env", "optimized_in_IsAS":True}
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)

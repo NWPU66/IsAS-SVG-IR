@@ -133,7 +133,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_base_color = 0.0
         self.lambda_base_color_smooth = 0.0
         self.lambda_roughness_smooth = 0.0
-        self.lambda_metallness_smooth = 0.0
+        self.lambda_metallic_smooth = 0.0
         self.lambda_light_smooth = 0.0
         self.lambda_visibility_smooth = 0.0
         self.lambda_visibility = 0.0

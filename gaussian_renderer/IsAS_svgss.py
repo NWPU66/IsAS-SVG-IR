@@ -194,7 +194,7 @@ def render_view(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: tor
     if is_training:
         rendered_pbr, rendered_base_color, rendered_shading_normal, rendered_roughness,\
             rendered_metallic , rendered_diffuse \
-            = rendered_vfeature.split([3, 3, 3, 1, 3], dim=0)
+            = rendered_vfeature.split([3, 3, 3, 1, 1, 3], dim=0)
         feature_dict.update({"base_color": opacity_feilter(rgb_to_srgb(rendered_base_color)),
                              "diffuse": opacity_feilter(rgb_to_srgb(rendered_diffuse)),
                              "roughness": opacity_feilter(rendered_roughness),
@@ -203,7 +203,7 @@ def render_view(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: tor
     else:
         rendered_pbr, rendered_base_color, rendered_shading_normal, rendered_roughness,\
             rendered_metallic, rendered_direct_pbr, rendered_indirect_pbr\
-            = rendered_vfeature.split([3, 3, 3, 1, 3, 3], dim=0)
+            = rendered_vfeature.split([3, 3, 3, 1, 1, 3, 3], dim=0)
         feature_dict.update({
                              "base_color": opacity_feilter(rgb_to_srgb(rendered_base_color)),
                              "direct": rgb_to_srgb(rendered_direct_pbr),
@@ -268,20 +268,22 @@ def calculate_loss(viewpoint_camera, pc, results, opt, direct_light_env_light, i
 
     gt_image = viewpoint_camera.original_image.cuda()
     Ll1 = F.l1_loss(rendered_image, gt_image)
-    ssim_val, ssim_val_per_pixel = ssim(rendered_image, gt_image)
+    ssim_val_dict = {}
+    ssim_val = ssim(rendered_image, gt_image, dict_params=ssim_val_dict)
     tb_dict["l1"] = Ll1.item()
     tb_dict["psnr"] = psnr(rendered_image, gt_image).mean().item()
     tb_dict["ssim"] = ssim_val.item()
     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_val)
-    loss_per_pixel = (1.0 - opt.lambda_dssim) * torch.abs(rendered_image - gt_image) + opt.lambda_dssim * (1.0 - ssim_val_per_pixel)
+    loss_per_pixel = (1.0 - opt.lambda_dssim) * torch.abs(rendered_image - gt_image) + opt.lambda_dssim * (1.0 - ssim_val_dict["loss_per_pixel"])
 
     Ll1_pbr = F.l1_loss(rendered_pbr, gt_image)
-    ssim_val_pbr, ssim_val_pbr_per_pixel = ssim(rendered_pbr, gt_image)
+    ssim_val_pbr_dict = {}
+    ssim_val_pbr = ssim(rendered_pbr, gt_image, dict_params=ssim_val_pbr_dict)
     tb_dict["l1_pbr"] = Ll1_pbr.item()
     tb_dict["ssim_pbr"] = ssim_val_pbr.item()
     tb_dict["psnr_pbr"] = psnr(rendered_pbr, gt_image).mean().item()
     loss_pbr = (1.0 - opt.lambda_dssim) * Ll1_pbr + opt.lambda_dssim * (1.0 - ssim_val_pbr)
-    loss_pbr_per_pixel = (1.0 - opt.lambda_dssim) * torch.abs(rendered_pbr - gt_image) + opt.lambda_dssim * (1.0 - ssim_val_pbr_per_pixel)
+    loss_pbr_per_pixel = (1.0 - opt.lambda_dssim) * torch.abs(rendered_pbr - gt_image) + opt.lambda_dssim * (1.0 - ssim_val_pbr_dict["loss_per_pixel"])
     loss = loss + opt.lambda_pbr * loss_pbr
     loss_per_pixel = loss_per_pixel + opt.lambda_pbr * loss_pbr_per_pixel
 

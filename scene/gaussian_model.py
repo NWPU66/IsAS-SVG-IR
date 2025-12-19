@@ -531,9 +531,9 @@ class GaussianModel:
 
     def add_radiance_to_optimizer(self):
         self._radiances.requires_grad_(True)
-        self._radiance_ratio = torch.tensor(1.0, requires_grad=True, device="cuda")
-        self.optimizer.add_param_group({'params': self._radiances, 'lr': 0.0001, 'name': 'radia`nces'})
-        self.optimizer.add_param_group({'params': [self._radiance_ratio], 'lr': 0.01, 'name': 'radiance_ratio'})
+        self._radiance_ratio = torch.tensor([1.0], requires_grad=True, device="cuda")
+        self.optimizer.add_param_group({'params': [self._radiances], 'lr': 0.0001, 'name': 'radia`nces', "optimized_in_IsAS":True})
+        self.optimizer.add_param_group({'params': [self._radiance_ratio], 'lr': 0.01, 'name': 'radiance_ratio', "optimized_in_IsAS":True})
 
     def calculate_radiance(self, direct_light, sample_num=64):
         N = self.get_xyz.shape[0]
