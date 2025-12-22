@@ -128,6 +128,7 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
             ]
 
         loss = 0
+        # FIXME - change len(viewpoint_stack) to the num of all images
         viewpoint_cam_idx = randint(0, len(viewpoint_stack) - 1)
         viewpoint_cams: List[Camera] = [
             viewpoint_stack[0].pop(viewpoint_cam_idx),
@@ -154,7 +155,7 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
                 if is_pbr and (iteration % pipe.save_training_vis_iteration == 0 or iteration == first_iter + 1):
                     # gaussians.calculate_radiance(direct_env_light)
                     pass
-                save_training_vis(viewpoint_cam, gaussians, background, render_fn,
+                save_training_vis(viewpoint_cams, gaussians, background, render_fn,
                                   pipe, opt, first_iter, iteration, pbr_kwargs)
             # Progress bar
             pbar_dict = {"num": gaussians.get_xyz.shape[0]}
@@ -301,12 +302,13 @@ def training_report(tb_writer, iteration, tb_dict, scene: Scene, renderFunc, pip
         torch.cuda.empty_cache()
 
 
-def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt, first_iter, iteration, pbr_kwargs):
+def save_training_vis(viewpoint_cams: List[Camera], gaussians, background, render_fn, pipe, opt, first_iter, iteration, pbr_kwargs):
     os.makedirs(os.path.join(args.model_path, "visualize"), exist_ok=True)
+    viewpoint_cam = viewpoint_cams[0]
     with torch.no_grad():
         if iteration % pipe.save_training_vis_iteration == 0 or iteration == first_iter + 1:
             
-            render_pkg = render_fn(viewpoint_cam, gaussians, pipe, background,
+            render_pkg = render_fn(viewpoint_cams, gaussians, pipe, background,
                                    opt=opt, is_training=False, dict_params=pbr_kwargs)
 
             visualization_list = [

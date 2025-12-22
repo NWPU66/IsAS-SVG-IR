@@ -12,6 +12,7 @@ from utils.loss_utils import ssim, first_order_edge_aware_loss, second_order_edg
     bilateral_smooth_loss, tv_loss, cos_loss
 from utils.image_utils import psnr, depth2rgb, normal2rgb, depth2normal, match_depth, normal2curv, resize_image, cross_sample
 from .rgss_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+from typing import List
 
 
 def render_view(camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, 
@@ -231,13 +232,14 @@ def calculate_loss(viewpoint_camera, pc, render_pkg, opt, iteration):
     
     return loss, tb_dict
 
-def render(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, 
+def render(viewpoint_cameras: List[Camera], pc: GaussianModel, pipe, bg_color: torch.Tensor, 
            scaling_modifier=1.0,override_color=None, opt: OptimizationParams = None, 
            is_training=False, dict_params=None, iteration=0):
     """
     Render the scene.
     Background tensor (bg_color) must be on GPU!
     """
+    viewpoint_camera = viewpoint_cameras[0]
     results = render_view(viewpoint_camera, pc, pipe, bg_color, scaling_modifier, override_color,
                           computer_pseudo_normal=True if opt is not None and opt.lambda_normal_render_depth>0 else False)
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-root_dir="/root/datasets/TensoIR/"
+root_dir="/docker-share/datasets/TensorIR/"
 list="hotdog armadillo ficus lego"
 
 for i in $list

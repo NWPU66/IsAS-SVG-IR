@@ -6,7 +6,7 @@ from scene.cameras import Camera
 
 
 def collect_theta_params(
-    gaussians: GaussianModel, pbr_kwargs: dict | None
+    gaussians: GaussianModel, pbr_kwargs
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Collect all parameters from the gaussian model and the pbr model.
