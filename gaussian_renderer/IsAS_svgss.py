@@ -415,7 +415,7 @@ def calculate_loss(viewpoint_camera, pc, results, opt, direct_light_env_light, i
     return loss, tb_dict
 
 
-def render_IsAS_svgss(viewpoint_cameras: List[Camera], pc: GaussianModel, pipe, bg_color: torch.Tensor,
+def render_IsAS_svgss(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Tensor,
                  scaling_modifier=1.0, override_color=None, opt: OptimizationParams = False,
                  is_training=False, dict_params=None, **kwargs):
     """
@@ -424,17 +424,16 @@ def render_IsAS_svgss(viewpoint_cameras: List[Camera], pc: GaussianModel, pipe, 
     """
 
     # half resolution rendering
-    viewpoint_camera = viewpoint_cameras[1]
-    results = render_view(viewpoint_camera, pc, pipe, bg_color,
-                          scaling_modifier, override_color, is_training, dict_params)
-    iteration = kwargs.get("iteration", 0)
-
     if is_training:
-        loss, tb_dict = calculate_loss(viewpoint_camera, pc, results, opt, direct_light_env_light=dict_params['env_light'], iteration=iteration)
+        viewpoint_camera_half = kwargs["viewpoint_camera_half"]
+        results = render_view(viewpoint_camera_half, pc, pipe, bg_color,
+                            scaling_modifier, override_color, is_training, dict_params)
+        iteration = kwargs.get("iteration", 0)
+
+        loss, tb_dict = calculate_loss(viewpoint_camera_half, pc, results, opt, direct_light_env_light=dict_params['env_light'], iteration=iteration)
         results["tb_dict"] = tb_dict
         results["loss"] = loss
 
-    if is_training:
         """ 
         ================================================================================
         Image Space Adaptive Sampling Stage 1:
@@ -461,7 +460,6 @@ def render_IsAS_svgss(viewpoint_cameras: List[Camera], pc: GaussianModel, pipe, 
         half_pj = torch.clamp(pj1pj2 / torch.sum(pj1pj2).clamp_min(1e-8), min=1e-8, max=1) # convert into [0, 1]
 
     # full resolution rendering
-    viewpoint_camera = viewpoint_cameras[0]
     results = render_view(viewpoint_camera, pc, pipe, bg_color,
                           scaling_modifier, override_color, is_training, dict_params)
     iteration = kwargs.get("iteration", 0)

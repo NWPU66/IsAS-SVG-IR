@@ -1,5 +1,7 @@
 #!/bin/bash
 
+export CUDA_VISIBLE_DEVICES="1"
+
 root_dir="/docker-share/datasets/TensorIR/"
 list="hotdog armadillo ficus lego"
 

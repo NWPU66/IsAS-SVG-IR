@@ -34,7 +34,7 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
     Setup Gaussians
     """
     gaussians = GaussianModel(dataset.sh_degree, render_type=args.type)
-    scene = Scene(dataset, gaussians, resolution_scales=[1.0, 2.0, 4.0, 8.0])   # To load half resolution image
+    scene = Scene(dataset, gaussians, resolution_scales=[1.0, 2.0])   # To load half resolution image
     if args.checkpoint:
         print("Create Gaussians from checkpoint {}".format(args.checkpoint))
         first_iter = gaussians.create_from_ckpt(args.checkpoint, restore_optimizer=True)
@@ -122,25 +122,20 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
 
         # Pick a random Camera
         if not viewpoint_stack:
-            viewpoint_stack = [
-                scene.getTrainCameras(scale=1.0).copy(),
-                scene.getTrainCameras(scale=2.0).copy(),
-            ]
+            viewpoint_stack = scene.getTrainCameras(scale=1.0).copy()
 
         loss = 0
-        # FIXME - change len(viewpoint_stack) to the num of all images
         viewpoint_cam_idx = randint(0, len(viewpoint_stack) - 1)
-        viewpoint_cams: List[Camera] = [
-            viewpoint_stack[0].pop(viewpoint_cam_idx),
-            viewpoint_stack[1].pop(viewpoint_cam_idx),  # half resolution
-        ]
+        viewpoint_cam = viewpoint_stack.pop(viewpoint_cam_idx)
+        viewpoint_cam_half = scene.getTrainCameras(scale=2.0)[viewpoint_cam_idx]
 
         if (iteration - 1) == args.debug_from:
             pipe.debug = True
 
         pbr_kwargs["iteration"] = iteration - first_iter
-        render_pkg = render_fn(viewpoint_cams, gaussians, pipe, background,
-                               opt=opt, is_training=True, dict_params=pbr_kwargs, iteration=iteration)
+        render_pkg = render_fn(viewpoint_cam, gaussians, pipe, background,
+                               opt=opt, is_training=True, dict_params=pbr_kwargs, iteration=iteration,
+                               viewpoint_camera_half=viewpoint_cam_half)
 
         viewspace_point_tensor, visibility_filter, radii = \
             render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -155,7 +150,7 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
                 if is_pbr and (iteration % pipe.save_training_vis_iteration == 0 or iteration == first_iter + 1):
                     # gaussians.calculate_radiance(direct_env_light)
                     pass
-                save_training_vis(viewpoint_cams, gaussians, background, render_fn,
+                save_training_vis(viewpoint_cam, gaussians, background, render_fn,
                                   pipe, opt, first_iter, iteration, pbr_kwargs)
             # Progress bar
             pbar_dict = {"num": gaussians.get_xyz.shape[0]}
@@ -302,13 +297,12 @@ def training_report(tb_writer, iteration, tb_dict, scene: Scene, renderFunc, pip
         torch.cuda.empty_cache()
 
 
-def save_training_vis(viewpoint_cams: List[Camera], gaussians, background, render_fn, pipe, opt, first_iter, iteration, pbr_kwargs):
+def save_training_vis(viewpoint_cam: Camera, gaussians, background, render_fn, pipe, opt, first_iter, iteration, pbr_kwargs):
     os.makedirs(os.path.join(args.model_path, "visualize"), exist_ok=True)
-    viewpoint_cam = viewpoint_cams[0]
     with torch.no_grad():
         if iteration % pipe.save_training_vis_iteration == 0 or iteration == first_iter + 1:
             
-            render_pkg = render_fn(viewpoint_cams, gaussians, pipe, background,
+            render_pkg = render_fn(viewpoint_cam, gaussians, pipe, background,
                                    opt=opt, is_training=False, dict_params=pbr_kwargs)
 
             visualization_list = [

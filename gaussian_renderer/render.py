@@ -232,14 +232,13 @@ def calculate_loss(viewpoint_camera, pc, render_pkg, opt, iteration):
     
     return loss, tb_dict
 
-def render(viewpoint_cameras: List[Camera], pc: GaussianModel, pipe, bg_color: torch.Tensor, 
+def render(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, 
            scaling_modifier=1.0,override_color=None, opt: OptimizationParams = None, 
-           is_training=False, dict_params=None, iteration=0):
+           is_training=False, dict_params=None, iteration=0, **kwargs):
     """
     Render the scene.
     Background tensor (bg_color) must be on GPU!
     """
-    viewpoint_camera = viewpoint_cameras[0]
     results = render_view(viewpoint_camera, pc, pipe, bg_color, scaling_modifier, override_color,
                           computer_pseudo_normal=True if opt is not None and opt.lambda_normal_render_depth>0 else False)
 
