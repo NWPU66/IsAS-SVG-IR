@@ -450,12 +450,14 @@ def render_IsAS_svgss(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_colo
         I_Theta = results["pbr"]   # image
         theta_params, theta_lr = collect_theta_params(pc, dict_params)    # m_theta
         dLoss_dI = compute_dLoss_dI(Loss_I, I_Theta)    # 3, H, W
-        dI_dTheta = compute_dI_dtheta(I_Theta, theta_params)    # 3, H, W, m_theta
+        # dI_dTheta = compute_dI_dtheta(I_Theta, theta_params)    # 3, H, W, m_theta
+        dI_dTheta2 = compute_dI_dtheta_square_sum(I_Theta, theta_params, theta_lr)    # 3, H, W
 
         # 2. calculate pj1, pj2 and pj
         theta_lr = theta_lr.unsqueeze(0).unsqueeze(0).unsqueeze(0)  # 1, 1, 1, m_theta
         pj1 = torch.pow(dLoss_dI, 2)    # 3, H, W
-        pj2 = torch.sum(torch.pow(dI_dTheta, 2) * torch.pow(theta_lr, 2), dim=-1) # 3, H, W
+        # pj2 = torch.sum(torch.pow(dI_dTheta, 2) * torch.pow(theta_lr, 2), dim=-1) # 3, H, W
+        pj2 = dI_dTheta2
         pj1pj2 = torch.sqrt(pj1 * pj2)
         half_pj = torch.clamp(pj1pj2 / torch.sum(pj1pj2).clamp_min(1e-8), min=1e-8, max=1) # convert into [0, 1]
 

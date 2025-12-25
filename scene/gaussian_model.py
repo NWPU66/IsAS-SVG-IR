@@ -532,7 +532,7 @@ class GaussianModel:
     def add_radiance_to_optimizer(self):
         self._radiances.requires_grad_(True)
         self._radiance_ratio = torch.tensor([1.0], requires_grad=True, device="cuda")
-        self.optimizer.add_param_group({'params': [self._radiances], 'lr': 0.0001, 'name': 'radia`nces', "optimized_in_IsAS":True})
+        self.optimizer.add_param_group({'params': [self._radiances], 'lr': 0.0001, 'name': 'radia`nces', "optimized_in_IsAS":False})
         self.optimizer.add_param_group({'params': [self._radiance_ratio], 'lr': 0.01, 'name': 'radiance_ratio', "optimized_in_IsAS":True})
 
     def calculate_radiance(self, direct_light, sample_num=64):
@@ -774,10 +774,10 @@ class GaussianModel:
                 {'params': [self._base_color], 'lr': training_args.base_color_lr, "name": "base_color", "optimized_in_IsAS":True},
                 {'params': [self._roughness], 'lr': training_args.roughness_lr, "name": "roughness", "optimized_in_IsAS":True},
                 {'params': [self._metallic], 'lr': training_args.metallic_lr, "name": "metallic", "optimized_in_IsAS":True},
-                {'params': [self._incidents_dc], 'lr': training_args.light_lr, "name": "incidents_dc", "optimized_in_IsAS":True},
-                {'params': [self._incidents_rest], 'lr': training_args.light_rest_lr, "name": "incidents_rest", "optimized_in_IsAS":True},
-                {'params': [self._visibility_dc], 'lr': training_args.visibility_lr, "name": "visibility_dc", "optimized_in_IsAS":True},
-                {'params': [self._visibility_rest], 'lr': training_args.visibility_rest_lr, "name": "visibility_rest", "optimized_in_IsAS":True},
+                {'params': [self._incidents_dc], 'lr': training_args.light_lr, "name": "incidents_dc", "optimized_in_IsAS":False},
+                {'params': [self._incidents_rest], 'lr': training_args.light_rest_lr, "name": "incidents_rest", "optimized_in_IsAS":False},
+                {'params': [self._visibility_dc], 'lr': training_args.visibility_lr, "name": "visibility_dc", "optimized_in_IsAS":False},
+                {'params': [self._visibility_rest], 'lr': training_args.visibility_rest_lr, "name": "visibility_rest", "optimized_in_IsAS":False},
             ])
 
         self.optimizer = torch.optim.Adam(l, lr=1e-4, eps=1e-15)
