@@ -1,25 +1,27 @@
 #!/bin/bash
 
 export CUDA_VISIBLE_DEVICES="1"
+export CUDA_HOME="/usr/local/cuda-11"
 
 root_dir="/docker-share/datasets/TensorIR/"
-list="hotdog armadillo ficus lego"
+# list="hotdog armadillo ficus lego"
+list="armadillo"
 
-for i in $list
+for i in $list 
 do
-    python train.py --eval \
-        -s ${root_dir}${i} \
-        -m output/TensoIR/${i}/gss \
-        --lambda_normal_render_depth 0.0 \
-        --lambda_normal_smooth 0.02 \
-        --lambda_mask_entropy 0.1 \
-        --save_training_vis \
-        --densify_grad_normal_threshold 1e-8 \
-        --lambda_depth_var 1e-2
+    # python train.py --eval \
+    #     -s ${root_dir}${i} \
+    #     -m output/TensoIR/${i}/gss \
+    #     --lambda_normal_render_depth 0.0 \
+    #     --lambda_normal_smooth 0.02 \
+    #     --lambda_mask_entropy 0.1 \
+    #     --save_training_vis \
+    #     --densify_grad_normal_threshold 1e-8 \
+    #     --lambda_depth_var 1e-2
 
-    python eval_nvs.py --eval \
-        -m output/TensoIR/${i}/gss \
-        -c output/TensoIR/${i}/gss/chkpnt30000.pth
+    # python eval_nvs.py --eval \
+    #     -m output/TensoIR/${i}/gss \
+    #     -c output/TensoIR/${i}/gss/chkpnt30000.pth
 
     python train.py --eval \
         -s ${root_dir}${i} \
@@ -50,9 +52,9 @@ do
         -t render_relight \
         --skip_train
     
-    python eval_relighting_tensoIR.py \
-        -m "output/TensoIR/${i}/render_relight" \
-        -c "output/TensoIR/${i}/render_relight/chkpnt50000.pth" \
-        --sample_num 384 \
+    # python eval_relighting_tensoIR.py \
+    #     -m "output/TensoIR/${i}/render_relight" \
+    #     -c "output/TensoIR/${i}/render_relight/chkpnt50000.pth" \
+    #     --sample_num 384 \
 
 done
